@@ -32,7 +32,7 @@ for fname, coords in data.items():
     lat_rt, lon_rt = m.toLatLon(mgrs_rt.encode())
     grids.append({"fname": fname, "lb": [lat_lb, lon_lb], "rt": [lat_rt, lon_rt]})
 
-# HTMLテンプレート
+# Leaflet HTMLテンプレート（Leaflet.pm + Turf.js対応）
 html_template = f"""
 <!DOCTYPE html>
 <html>
@@ -41,6 +41,7 @@ html_template = f"""
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.pm/dist/leaflet.pm.css" />
   <style>
     #map {{ width: 100%; height: 90vh; }}
     #copyBtn {{ width: 100%; height: 10vh; font-size: 16px; }}
@@ -51,6 +52,8 @@ html_template = f"""
 <button id="copyBtn">Copy Selected Grid Names</button>
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.pm/dist/leaflet.pm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf/turf.min.js"></script>
 <script>
   const grids = {json.dumps(grids, indent=2)};
   const selectedGrids = new Set();
@@ -61,9 +64,11 @@ html_template = f"""
       attribution: '© OpenStreetMap contributors'
   }}).addTo(map);
 
+  // PCD矩形描画
   grids.forEach(grid => {{
     const bounds = [[grid.lb[0], grid.lb[1]], [grid.rt[0], grid.rt[1]]];
     const rect = L.rectangle(bounds, {{color: "blue", weight: 1, fillOpacity: 0.3}}).addTo(map);
+    grid.rect = rect;  // 後で投げ縄選択時に参照
 
     // クリックで選択切り替え
     rect.on('click', () => {{
@@ -81,6 +86,40 @@ html_template = f"""
     rect.on('mouseout', (e) => {{
       rect.closeTooltip();
     }});
+  }});
+
+  // Leaflet.pmで投げ縄選択
+  map.pm.addControls({{
+    position: 'topleft',
+    drawPolygon: true,
+    editMode: false,
+    removalMode: false,
+    drawMarker: false,
+    drawPolyline: false,
+    drawCircle: false,
+    drawCircleMarker: false,
+    drawRectangle: false
+  }});
+
+  map.on('pm:create', e => {{
+    if(e.shape === 'Polygon') {{
+      const poly = e.layer.toGeoJSON();
+      grids.forEach(grid => {{
+        const bounds = [[grid.lb[0], grid.lb[1]], [grid.rt[0], grid.rt[1]]];
+        const rectPoly = turf.polygon([[
+          [bounds[0][1], bounds[0][0]],
+          [bounds[1][1], bounds[0][0]],
+          [bounds[1][1], bounds[1][0]],
+          [bounds[0][1], bounds[1][0]],
+          [bounds[0][1], bounds[0][0]]
+        ]]);
+        if(turf.booleanIntersects(poly, rectPoly)) {{
+          selectedGrids.add(grid.fname);
+          grid.rect.setStyle({{fillColor: 'red'}});
+        }}
+      }});
+      e.layer.remove(); // 投げ縄ポリゴンを消す
+    }}
   }});
 
   // ボタンクリックで clipboard にコピー
