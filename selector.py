@@ -3,9 +3,15 @@ import yaml
 from mgrs import MGRS
 import json
 import webbrowser
+import argparse
+
+# 引数のパース
+parser = argparse.ArgumentParser(description="PCD Grid Selector")
+parser.add_argument("input", default="grid.yaml", help="Input YAML file")
+args = parser.parse_args()
 
 # YAML読み込み
-with open("grid.yaml", "r") as f:
+with open(args.input, "r") as f:
     data = yaml.safe_load(f)
 
 x_res = data.get("x_resolution", 100)
@@ -89,10 +95,12 @@ html_template = f"""
 </html>
 """
 
+html_file = "/tmp/pcd_grid_map.html"
+
 # HTML出力
-with open("pcd_grid_map.html", "w", encoding="utf-8") as f:
+with open(html_file, "w", encoding="utf-8") as f:
     f.write(html_template)
 
-print("pcd_grid_map.html を生成しました。ブラウザで開いてください。")
+print(f"{html_file} を生成しました。ブラウザで開いてください。")
 
-webbrowser.open("pcd_grid_map.html")
+webbrowser.open(html_file)
