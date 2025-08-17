@@ -3,10 +3,11 @@ import yaml
 import mgrs
 import folium
 import webbrowser
+import argparse
 
-def main():
+
+def main(yaml_file):
     # 1. Load YAML file
-    yaml_file = "grid.yaml"
     with open(yaml_file, "r") as f:
         data = yaml.safe_load(f)
 
@@ -21,15 +22,20 @@ def main():
         lat, lon = m.toLatLon(mgrs_code)
         return lat, lon
 
+    viewer_xy = list(data.values())[0]
+    viewer_lat_lon = mgrs_to_latlon(grid_id + f"{viewer_xy[0]:05d}{viewer_xy[1]:05d}")
+
     # 3. Create Folium map
-    mymap = folium.Map(location=[35.0, 135.0], zoom_start=12, tiles="OpenStreetMap")
+    mymap = folium.Map(
+        location=[viewer_lat_lon[0], viewer_lat_lon[1]], zoom_start=15, tiles="OpenStreetMap"
+    )
 
     for fname, (x, y) in data.items():
         # Determine the range of this cell
         x1, y1 = x, y
         x2, y2 = x + x_res, y + y_res
 
-        # Convert to MGRS code
+        # Convert to MGRS code as format like 54SUE0000011111
         c1 = f"{grid_id}{x1:05d}{y1:05d}"
         c2 = f"{grid_id}{x2:05d}{y1:05d}"
         c3 = f"{grid_id}{x2:05d}{y2:05d}"
@@ -42,13 +48,10 @@ def main():
         geojson = {
             "type": "Feature",
             "properties": {"name": fname},
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[ [lon, lat] for lat, lon in latlon ]]
-            },
+            "geometry": {"type": "Polygon", "coordinates": [[[lon, lat] for lat, lon in latlon]]},
         }
 
-    # ---------- 4. Add as GeoJson (color can be toggled by clicking) ----------
+        # Add as GeoJson (color can be toggled by clicking)
         gj = folium.GeoJson(
             geojson,
             style_function=lambda feature: {
@@ -63,14 +66,21 @@ def main():
             },
             tooltip=folium.Tooltip(fname),  # ← Display PCD name on hover
         )
+
+        # クリックイベント（JS呼び出し）
+        gj.add_child(folium.features.GeoJsonPopup(fields=["name"]))
         gj.add_to(mymap)
 
-    # ---------- Output ----------
-    html_file_path="/tmp/map.html"
-
+    # 4. Dump and open HTML file
+    html_file_path = "/tmp/map.html"
     mymap.save(html_file_path)
     webbrowser.open(html_file_path)
 
 
 if __name__ == "__main__":
-    main()
+
+    argparser = argparse.ArgumentParser(description="Visualize MGRS grid from YAML file.")
+    argparser.add_argument("yaml", default="grid.yaml", help="Path to the YAML file")
+    args = argparser.parse_args()
+
+    main(args.yaml)
