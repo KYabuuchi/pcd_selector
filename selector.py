@@ -6,21 +6,45 @@ import webbrowser
 import argparse
 
 
+class Projector:
+    def __init__(self, data):
+        self.data = data
+
+    def get_grid_code(self):
+        # Implement logic to extract grid code from projector data
+        return self.data.get("grid_code", "54SUE")
+
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="PCD Grid Selector")
-    parser.add_argument("input", default="pointcloud_metadata.yaml", help="Input YAML file")
-    parser.add_argument("--grid", default="54SUE", help="MGRS grid code")
+    parser.add_argument("metadata", help="Input YAML file (pointcloud_metadata.yaml)")
+    parser.add_argument(
+        "projector_info", nargs="?", default=None, help="Optional map_projector_info.yaml"
+    )
     args = parser.parse_args()
 
-    # Print projection type and grid code
-    grid_code = args.grid
-    print("Projection Type: ", "MGRS")
-    print("Grid Code: ", grid_code)
-
     # YAML読み込み
-    with open(args.input, "r") as f:
+    with open(args.metadata, "r") as f:
         data = yaml.safe_load(f)
+
+    # 2つ目のファイルが指定された場合は読み込んで処理
+    projector_data = None
+    if args.projector_info:
+        print(f"Loading projector file: {args.projector_info}")
+        with open(args.projector_info, "r") as f:
+            projector_data = yaml.safe_load(f)
+
+    grid_code = "54SUE"
+    if projector_data:
+        grid_code
+    else:
+        print("No projector info file provided. Use default settings.")
+
+    # Print projection type and grid code
+    grid_code = "54SUE"
+    print("Projection Type: ", "MGRS")
+    print("Grid Code: ", "54SUE")
 
     # load resolution: the default is 100
     x_res = data.get("x_resolution", 100)

@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <title>PCD Grid Selector</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.pm/dist/leaflet.pm.css" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+    #uploadPanel {
+      padding: 10px;
+      background: #f0f0f0;
+      border-bottom: 1px solid #ccc;
+    }
+    #uploadPanel label {
+      margin-right: 10px;
+    }
+    #uploadPanel input[type="file"] {
+      margin-right: 20px;
+    }
+    #uploadPanel input[type="text"] {
+      width: 100px;
+      margin-right: 10px;
+    }
+    #uploadPanel button {
+      padding: 5px 15px;
+      margin-right: 10px;
+    }
+    #map {
+      width: 100%;
+      height: calc(100vh - 150px);
+    }
+    #copyBtn {
+      width: 100%;
+      height: 50px;
+      font-size: 16px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    #copyBtn:hover {
+      background: #45a049;
+    }
+    #copyBtn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .status {
+      margin: 5px 0;
+      font-size: 14px;
+    }
+    .error {
+      color: red;
+    }
+    .success {
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <div id="uploadPanel">
+    <label for="metadataFile">メタデータYAML:</label>
+    <input type="file" id="metadataFile" accept=".yaml,.yml" />
+    
+    <label for="projectorFile">投影情報YAML (オプション):</label>
+    <input type="file" id="projectorFile" accept=".yaml,.yml" />
+    
+    <label for="gridCode">Grid Code:</label>
+    <input type="text" id="gridCode" value="54SUE" placeholder="54SUE" />
+    
+    <button id="loadBtn">読み込み</button>
+    <button id="clearBtn">クリア</button>
+    
+    <div id="status" class="status"></div>
+  </div>
+  
+  <div id="map"></div>
+  <button id="copyBtn" disabled>選択したグリッド名をコピー</button>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.pm/dist/leaflet.pm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <script src="https://unpkg.com/mgrs@2.1.0/dist/mgrs.min.js"></script>
+  
+  <script>
+    let map = null;
+    let grids = [];
+    let selectedGrids = new Set();
+    let gridRectangles = [];
+
+    // マップの初期化
+    function initMap(centerLat = 35.6812, centerLon = 139.7671, zoom = 10) {
+      if (map) {
+        map.remove();
+      }
+      
+      map = L.map('map').setView([centerLat, centerLon], zoom);
+      
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(map);
+
+      // Leaflet.pmで投げ縄選択
+      map.pm.addControls({
+        position: 'topleft',
+        drawPolygon: true,
+        editMode: false,
+        removalMode: false,
+        drawMarker: false,
+        drawPolyline: false,
+        drawCircle: false,
+        drawCircleMarker: false,
+        drawRectangle: false
+      });
+
+      map.on('pm:create', e => {
+        if (e.shape === 'Polygon') {
+          const poly = e.layer.toGeoJSON();
+          grids.forEach((grid, index) => {
+            const bounds = [[grid.lb[0], grid.lb[1]], [grid.rt[0], grid.rt[1]]];
+            const rectPoly = turf.polygon([[
+              [bounds[0][1], bounds[0][0]],
+              [bounds[1][1], bounds[0][0]],
+              [bounds[1][1], bounds[1][0]],
+              [bounds[0][1], bounds[1][0]],
+              [bounds[0][1], bounds[0][0]]
+            ]]);
+            if (turf.booleanIntersects(poly, rectPoly)) {
+              selectedGrids.add(grid.fname);
+              if (gridRectangles[index]) {
+                gridRectangles[index].setStyle({fillColor: 'red'});
+              }
+            }
+          });
+          e.layer.remove(); // 投げ縄ポリゴンを消す
+          updateCopyButton();
+        }
+      });
+    }
+
+    // MGRSから緯度経度に変換
+    function mgrsToLatLon(mgrsString) {
+      try {
+        // mgrsパッケージのtoPoint()は[longitude, latitude]を返す
+        if (typeof mgrs !== 'undefined' && mgrs.toPoint) {
+          const point = mgrs.toPoint(mgrsString);
+          // [lon, lat] -> [lat, lon]に変換
+          return [point[1], point[0]];
+        } else {
+          console.error('MGRS library not loaded');
+          return null;
+        }
+      } catch (e) {
+        console.error('MGRS conversion error:', e, 'for:', mgrsString);
+        return null;
+      }
+    }
+
+    // YAMLファイルを読み込んで処理
+    function processYAML(metadataData, projectorData, gridCode) {
+      try {
+        // 解像度の取得（デフォルト100）
+        const xRes = metadataData.x_resolution || 100;
+        const yRes = metadataData.y_resolution || 100;
+
+        grids = [];
+        gridRectangles = [];
+        selectedGrids.clear();
+
+        // PCD領域を緯度経度に変換
+        for (const [fname, coords] of Object.entries(metadataData)) {
+          if (fname === "x_resolution" || fname === "y_resolution") {
+            continue;
+          }
+          
+          if (!Array.isArray(coords) || coords.length !== 2) {
+            console.warn(`Invalid coordinates for ${fname}:`, coords);
+            continue;
+          }
+
+          const [x, y] = coords;
+          const mgrsLb = `${gridCode}${String(x).padStart(3, '0')}${String(y).padStart(3, '0')}`;
+          const mgrsRt = `${gridCode}${String(x + xRes).padStart(3, '0')}${String(y + yRes).padStart(3, '0')}`;
+          
+          const lb = mgrsToLatLon(mgrsLb);
+          const rt = mgrsToLatLon(mgrsRt);
+          
+          if (lb && rt) {
+            grids.push({
+              fname: fname,
+              lb: lb,
+              rt: rt
+            });
+          } else {
+            console.error(`Failed to convert MGRS for ${fname}: ${mgrsLb}, ${mgrsRt}`);
+          }
+        }
+
+        if (grids.length === 0) {
+          showStatus('エラー: 有効なグリッドが見つかりませんでした', 'error');
+          return;
+        }
+
+        // 地図の中心を最初のグリッドに設定
+        const centerLat = grids[0].lb[0];
+        const centerLon = grids[0].lb[1];
+        initMap(centerLat, centerLon, 15);
+
+        // PCD矩形描画
+        grids.forEach((grid, index) => {
+          const bounds = [[grid.lb[0], grid.lb[1]], [grid.rt[0], grid.rt[1]]];
+          const rect = L.rectangle(bounds, {
+            color: "blue",
+            weight: 1,
+            fillOpacity: 0.3,
+            fillColor: "blue"
+          }).addTo(map);
+          
+          gridRectangles[index] = rect;
+
+          // クリックで選択切り替え
+          rect.on('click', () => {
+            const current = rect.options.fillColor;
+            const newColor = current === "red" ? "blue" : "red";
+            rect.setStyle({fillColor: newColor});
+            if (newColor === "red") {
+              selectedGrids.add(grid.fname);
+            } else {
+              selectedGrids.delete(grid.fname);
+            }
+            updateCopyButton();
+          });
+
+          // マウスオーバーでファイル名表示
+          rect.on('mouseover', () => {
+            rect.bindTooltip(grid.fname, {permanent: false, direction: "top"}).openTooltip();
+          });
+          rect.on('mouseout', () => {
+            rect.closeTooltip();
+          });
+        });
+
+        showStatus(`成功: ${grids.length}個のグリッドを読み込みました`, 'success');
+        updateCopyButton();
+        
+      } catch (error) {
+        console.error('Processing error:', error);
+        showStatus(`エラー: ${error.message}`, 'error');
+      }
+    }
+
+    // ステータス表示
+    function showStatus(message, type = '') {
+      const statusDiv = document.getElementById('status');
+      statusDiv.textContent = message;
+      statusDiv.className = `status ${type}`;
+    }
+
+    // コピーボタンの状態更新
+    function updateCopyButton() {
+      const copyBtn = document.getElementById('copyBtn');
+      if (selectedGrids.size > 0) {
+        copyBtn.disabled = false;
+      } else {
+        copyBtn.disabled = true;
+      }
+    }
+
+    // ファイル読み込み
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+      const metadataFile = document.getElementById('metadataFile').files[0];
+      const projectorFile = document.getElementById('projectorFile').files[0];
+      const gridCode = document.getElementById('gridCode').value.trim() || '54SUE';
+
+      if (!metadataFile) {
+        showStatus('エラー: メタデータYAMLファイルを選択してください', 'error');
+        return;
+      }
+
+      try {
+        // メタデータファイルの読み込み
+        const metadataText = await metadataFile.text();
+        const metadataData = jsyaml.load(metadataText);
+
+        // 投影情報ファイルの読み込み（オプション）
+        let projectorData = null;
+        if (projectorFile) {
+          const projectorText = await projectorFile.text();
+          projectorData = jsyaml.load(projectorText);
+          // projector_dataからgrid_codeを取得（もしあれば）
+          if (projectorData && projectorData.grid_code) {
+            document.getElementById('gridCode').value = projectorData.grid_code;
+            gridCode = projectorData.grid_code;
+          }
+        }
+
+        processYAML(metadataData, projectorData, gridCode);
+        
+      } catch (error) {
+        console.error('File reading error:', error);
+        showStatus(`エラー: ファイルの読み込みに失敗しました - ${error.message}`, 'error');
+      }
+    });
+
+    // クリアボタン
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      if (map) {
+        gridRectangles.forEach(rect => {
+          if (rect) map.removeLayer(rect);
+        });
+      }
+      grids = [];
+      gridRectangles = [];
+      selectedGrids.clear();
+      updateCopyButton();
+      showStatus('クリアしました', '');
+      document.getElementById('metadataFile').value = '';
+      document.getElementById('projectorFile').value = '';
+    });
+
+    // コピーボタン
+    document.getElementById('copyBtn').addEventListener('click', () => {
+      const text = Array.from(selectedGrids).join(" ");
+      navigator.clipboard.writeText(text).then(() => {
+        alert("コピーしました:\n" + text);
+      }).catch(err => {
+        console.error('Copy failed:', err);
+        alert("コピーに失敗しました");
+      });
+    });
+
+    // 初期化
+    initMap();
+    showStatus('メタデータYAMLファイルを選択して「読み込み」をクリックしてください', '');
+  </script>
+</body>
+</html>
